@@ -29,7 +29,82 @@ def get_db():
     finally:
         conn.close()
 
+def init_db():
+    conn = psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST"),
+        port=os.getenv("POSTGRES_PORT"),
+        database=os.getenv("POSTGRES_DB"),
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD")
+    )
+    cur = conn.cursor()
+    
+    # Students table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id TEXT PRIMARY KEY,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            phone TEXT,
+            password TEXT,
+            role TEXT DEFAULT 'user',
+            created_at TIMESTAMP WITHOUT TIME ZONE,
+            updated_at TIMESTAMP WITHOUT TIME ZONE
+        )
+    """)
+    
+    # Custom Values table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_values (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMP WITHOUT TIME ZONE
+        )
+    """)
+    
+    # Assessments table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS assessments (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            template_type TEXT,
+            answers JSONB,
+            discovered_values JSONB,
+            ranked_values JSONB,
+            custom_values JSONB,
+            date_taken TIMESTAMP WITHOUT TIME ZONE
+        )
+    """)
+    
+    # Goals table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS goals (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            related_values JSONB,
+            status TEXT DEFAULT 'active',
+            progress INTEGER DEFAULT 0,
+            created_at TIMESTAMP WITHOUT TIME ZONE,
+            updated_at TIMESTAMP WITHOUT TIME ZONE
+        )
+    """)
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
 app = FastAPI()
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
 api_router = APIRouter(prefix="/api")
 
 # ==================== Models ====================
@@ -114,6 +189,7 @@ class Goal(GoalCreate):
 @api_router.post("/students/register", response_model=StudentResponse)
 def register_student(student: StudentCreate, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "students")
     cur.execute("SELECT 1 FROM students WHERE email=%s", (student.email.lower(),))
     if cur.fetchone():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -135,6 +211,7 @@ def register_student(student: StudentCreate, db=Depends(get_db)):
 @api_router.post("/students/login", response_model=StudentResponse)
 def login_student(login: StudentLogin, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "students")
     # Explicitly select only necessary fields or handle password separation
     cur.execute("SELECT * FROM students WHERE email=%s", (login.email.lower(),))
     student = cur.fetchone()
@@ -158,6 +235,7 @@ def login_student(login: StudentLogin, db=Depends(get_db)):
 @api_router.get("/users", response_model=List[StudentResponse])
 def get_users(db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "students")
     # Explicitly select fields to avoid issues if 'password' column missing?
     # Or just rely on Pydantic to ignore extras if 'SELECT *' returns it (it won't return it based on error)
     # But Pydantic 'StudentResponse' does NOT look for 'password', so it won't fail if it's missing.
@@ -167,6 +245,7 @@ def get_users(db=Depends(get_db)):
 @api_router.get("/students/{student_email}", response_model=StudentResponse)
 def get_student(student_email: str, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "students")
     cur.execute("SELECT * FROM students WHERE email=%s", (student_email,))
     student = cur.fetchone()
     if not student:
@@ -178,6 +257,7 @@ def get_student(student_email: str, db=Depends(get_db)):
 @api_router.post("/custom-values", response_model=CustomValue)
 def create_custom_value(value: CustomValueCreate, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "custom_values")
     value_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
@@ -193,6 +273,7 @@ def create_custom_value(value: CustomValueCreate, db=Depends(get_db)):
 @api_router.get("/custom-values/{user_id}", response_model=List[CustomValue])
 def get_custom_values(user_id: str, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "custom_values")
     cur.execute("SELECT * FROM custom_values WHERE user_id=%s", (user_id,))
     return cur.fetchall()
 
@@ -201,6 +282,7 @@ def get_custom_values(user_id: str, db=Depends(get_db)):
 @api_router.post("/assessments", response_model=Assessment)
 def create_assessment(data: AssessmentCreate, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "assessments")
     assessment_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
@@ -220,12 +302,14 @@ def create_assessment(data: AssessmentCreate, db=Depends(get_db)):
 @api_router.get("/assessments/{user_id}", response_model=List[Assessment])
 def get_assessments(user_id: str, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "assessments")
     cur.execute("SELECT * FROM assessments WHERE user_id=%s", (user_id,))
     return cur.fetchall()
 
 @api_router.get("/assessments/detail/{assessment_id}", response_model=Assessment)
 def get_assessment_detail(assessment_id: str, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "assessments")
     cur.execute("SELECT * FROM assessments WHERE id=%s", (assessment_id,))
     assessment = cur.fetchone()
     if not assessment:
@@ -237,6 +321,7 @@ def get_assessment_detail(assessment_id: str, db=Depends(get_db)):
 @api_router.post("/goals", response_model=Goal)
 def create_goal(goal: GoalCreate, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "goals")
     goal_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
@@ -254,6 +339,7 @@ def create_goal(goal: GoalCreate, db=Depends(get_db)):
 @api_router.get("/goals/{user_id}", response_model=List[Goal])
 def get_goals(user_id: str, db=Depends(get_db)):
     cur = db.cursor()
+    ensure_table(cur, "goals")
     cur.execute("SELECT * FROM goals WHERE user_id=%s", (user_id,))
     return cur.fetchall()
 
@@ -268,6 +354,7 @@ def update_goal(goal_id: str, update: GoalUpdate, db=Depends(get_db)):
     values = list(fields.values()) + [goal_id]
 
     cur = db.cursor()
+    ensure_table(cur, "goals")
     cur.execute(f"UPDATE goals SET {set_clause} WHERE id=%s", values)
     db.commit()
 
